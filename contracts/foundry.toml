@@ -1,0 +1,17 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+
+# Pharos Atlantic Testnet (chainId 688689). RPC is read from the RPC env var (a ZAN
+# keyed URL, e.g. https://api.zan.top/node/v1/pharos/atlantic/<KEY>).
+[rpc_endpoints]
+pharos = "${RPC}"
+
+# block-timestamp: channel expiry is time-based by design.
+# unsafe-typecast: the uint64 expiry cast is runtime-guarded by ExpiryOverflow.
+[lint]
+exclude_lints = ["block-timestamp", "unsafe-typecast"]

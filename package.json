@@ -1,0 +1,18 @@
+{
+  "name": "pay-per-call-settlement",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent scripts for the Pharos pay-per-call settlement skill (x402-style voucher channels).",
+  "scripts": {
+    "open": "node scripts/openChannel.js",
+    "voucher": "node scripts/voucher.js",
+    "redeem": "node scripts/redeem.js",
+    "reclaim": "node scripts/reclaim.js",
+    "query": "node scripts/query.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4"
+  }
+}
