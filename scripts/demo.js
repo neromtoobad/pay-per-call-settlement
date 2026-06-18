@@ -60,6 +60,19 @@ try {
   log(`- Provider: [\`${providerWallet.address}\`](${addressLink(providerWallet.address)}) (freshly generated, funded by payer)`);
   log('');
 
+  // Preflight: confirm the real connection + balance, so problems are obvious
+  // instead of an opaque "insufficient funds" (e.g. a stale exported RPC env var).
+  const net = await provider.getNetwork();
+  const payerBalance = await provider.getBalance(payer.address);
+  log(`- RPC chainId: ${net.chainId} · payer balance: ${fromWei(payerBalance)} PHRS`);
+  if (net.chainId !== 688689n) {
+    throw new Error(`Connected to chainId ${net.chainId}, not Pharos Atlantic (688689). A stale exported RPC overrides .env — open a fresh terminal, or run: unset RPC PRIVATE_KEY CONTRACT_ADDRESS`);
+  }
+  if (payerBalance < toWei('0.1')) {
+    throw new Error(`Payer ${payer.address} balance is only ${fromWei(payerBalance)} PHRS — too low. Fund it or claim from the faucet.`);
+  }
+  log('');
+
   // 1. Fund provider for redeem gas.
   log('## 1. Fund provider (for redeem gas)');
   const fundTx = await payer.sendTransaction({ to: providerWallet.address, value: toWei('0.02') });
