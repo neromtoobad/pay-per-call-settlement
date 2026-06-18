@@ -66,18 +66,12 @@ Or run it all at once (auto-funds a provider): `node scripts/demo.js 0.2 60`
 
 ## Live proof
 
-A full pay-per-call cycle on Pharos Atlantic (log: [`proof/transcript.md`](proof/transcript.md)):
+A full pay-per-call cycle on Pharos Atlantic — **including a live forged-voucher
+attack the contract rejects on-chain** — with every transaction linked in
+[`proof/transcript.md`](proof/transcript.md). Reproduce it with `node scripts/demo.js 0.2 30`.
 
-| Step | Transaction |
-|---|---|
-| Deploy | [`0x45fc…79db`](https://atlantic.pharosscan.xyz/tx/0x45fce2a61c34ce9a475d2c2247ac2c8cee3cabaffc11b14634f1064206b379db) |
-| Open channel (escrow 0.2) | [`0xddd5…0cfe8`](https://atlantic.pharosscan.xyz/tx/0xddd5c2e965614b8317593b8c26ebb98c623cb3199c8a7ea507296790cce0cfe8) |
-| 3 calls → 3 off-chain vouchers | **0 transactions** (cumulative 0.05 → 0.10 → 0.15) |
-| Redeem latest → settles all 3 | [`0xb39a…f7a5`](https://atlantic.pharosscan.xyz/tx/0xb39aa2e9e68b612f7971904fcc4678643e9766ec8ef3cd6abb9c79fda9baf7a5) |
-| Reclaim remainder (0.05) | [`0x93fd…9864`](https://atlantic.pharosscan.xyz/tx/0x93fdf1c402b7581ea3808fd83e83f9fdf1bae013d0eb3f533cdfc48927539864) |
-
-Three calls were authorized with free off-chain signatures and settled by one
-on-chain transaction; the unused escrow was returned. Pay per call, settle once.
+- **Deployed:** [`PayPerCallChannels`](https://atlantic.pharosscan.xyz/address/0xAcAB26A6130fC6cB32CAB58Ec0F011E7346a2E05) · [deploy tx](https://atlantic.pharosscan.xyz/tx/0x45fce2a61c34ce9a475d2c2247ac2c8cee3cabaffc11b14634f1064206b379db)
+- **The run shows:** escrow once → 3 calls authorized by **free off-chain vouchers (0 transactions)** → a **forged voucher (not signed by the payer) is rejected** (`BadVoucher`) → the provider redeems the latest voucher, settling all 3 calls in **one** transaction → the payer reclaims the unused escrow.
 
 ## Security
 

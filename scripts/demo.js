@@ -1,39 +1,51 @@
-// End-to-end live demo: pay-per-call settlement on Pharos Atlantic.
-// Payer = the wallet in .env. Provider = a fresh wallet funded by the payer.
-// Shows 3 off-chain vouchers (3 "calls", zero tx) settled by ONE on-chain redeem,
-// then the payer reclaims the remainder. Writes proof/transcript.md.
+// Live demo: x402 PAY-PER-CALL settlement on Pharos Atlantic — three off-chain
+// vouchers (zero transactions) settled by ONE on-chain redeem, with a live
+// forged-voucher attack the contract rejects. Writes proof/transcript.md.
 //
 // Usage: node scripts/demo.js [depositPHRS] [durationSecs]
 import { ethers } from 'ethers';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import {
   getProvider, getSigner, getContract,
-  signVoucher, toWei, fromWei, txLink, addressLink, EXPLORER,
+  signVoucher, toWei, fromWei, txLink, addressLink,
 } from './lib.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const lines = [];
-const C = { reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m' };
-// Push markdown to the transcript file; print a clean colorized version to the terminal.
-function toConsole(md) {
-  let s = md.replace(/\[`([^`]+)`\]\(([^)]+)\)/g, (_, t, u) => `${t}  ${C.dim}${u}${C.reset}`);
-  s = s.replace(/`([^`]+)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, `${C.bold}$1${C.reset}`);
-  if (s.startsWith('# ')) return `\n${C.bold}${C.cyan}${s.slice(2)}${C.reset}\n`;
-  if (s.startsWith('## ')) return `\n${C.bold}${C.cyan}━━  ${s.slice(3)}  ━━${C.reset}`;
-  return s;
-}
-const log = (md = '') => { lines.push(md); console.log(toConsole(md)); };
 
-async function waitForTimestamp(provider, ts, label) {
-  log(`  ...waiting for ${label}`);
+// ---- terminal styling ----
+const S = {
+  reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
+  cyan: '\x1b[36m', green: '\x1b[32m', red: '\x1b[31m', yellow: '\x1b[33m', gray: '\x1b[90m',
+};
+const short = (h) => `${h.slice(0, 10)}…${h.slice(-4)}`;
+const rule = (ch = '═', n = 60) => ch.repeat(n);
+function banner(title, sub) {
+  console.log(`\n${S.cyan}${rule()}${S.reset}`);
+  console.log(`  ${S.bold}${title}${S.reset}`);
+  if (sub) console.log(`  ${S.dim}${sub}${S.reset}`);
+  console.log(`${S.cyan}${rule()}${S.reset}`);
+}
+const step = (n, total, t) =>
+  console.log(`\n${S.cyan}${S.bold}▎ STEP ${n}/${total}${S.reset}${S.bold} · ${t}${S.reset}`);
+const ok = (m) => console.log(`  ${S.green}✓${S.reset} ${m}`);
+const bad = (m) => console.log(`  ${S.red}⛔ ${m}${S.reset}`);
+const note = (m) => console.log(`     ${S.dim}${m}${S.reset}`);
+const txln = (label, hash) =>
+  console.log(`  ${S.green}✓${S.reset} ${label}  ${S.gray}${txLink(hash)}${S.reset}`);
+
+// ---- transcript (markdown proof) ----
+const T = [];
+const rec = (md = '') => T.push(md);
+
+async function waitWindow(provider, ts, label) {
+  process.stdout.write(`     ${S.dim}waiting for ${label}…${S.reset}`);
   for (;;) {
     const b = await provider.getBlock('latest');
-    if (b.timestamp > ts) return;
+    if (b.timestamp > ts) { process.stdout.write(`${S.dim} done${S.reset}\n`); return; }
     await sleep(3000);
   }
 }
-
-function eventArgs(contract, receipt, name) {
+function evt(contract, receipt, name) {
   for (const lg of receipt.logs) {
     try { const p = contract.interface.parseLog(lg); if (p?.name === name) return p.args; } catch { /* skip */ }
   }
@@ -41,95 +53,127 @@ function eventArgs(contract, receipt, name) {
 }
 
 try {
-  const [depositArg, durationArg] = process.argv.slice(2);
-  const depositPhrs = depositArg ?? '0.2';
-  const duration = Number(durationArg ?? 60);
+  const [dep, dur] = process.argv.slice(2);
+  const depositPhrs = dep ?? '0.2';
+  const duration = Number(dur ?? 30);
 
   const provider = getProvider();
   const payer = getSigner();
-  const providerWallet = ethers.Wallet.createRandom().connect(provider);
+  const prov = ethers.Wallet.createRandom().connect(provider);
   const contractAddress = process.env.CONTRACT_ADDRESS;
-  const payerContract = getContract(payer);
-  const providerContract = getContract(providerWallet);
+  const payerC = getContract(payer);
+  const provC = getContract(prov);
 
-  log('# Live proof — pay-per-call settlement on Pharos Atlantic');
-  log('');
-  log(`- Contract: [\`${contractAddress}\`](${addressLink(contractAddress)})`);
-  log(`- Chain: Pharos Atlantic Testnet (688689) · Explorer: ${EXPLORER}`);
-  log(`- Payer:    [\`${payer.address}\`](${addressLink(payer.address)})`);
-  log(`- Provider: [\`${providerWallet.address}\`](${addressLink(providerWallet.address)}) (freshly generated, funded by payer)`);
-  log('');
+  banner('PAY-PER-CALL  ·  x402 Settlement', 'Live on Pharos Atlantic Testnet (688689)');
 
-  // Preflight: confirm the real connection + balance, so problems are obvious
-  // instead of an opaque "insufficient funds" (e.g. a stale exported RPC env var).
+  // Preflight: prove the real connection + balance before spending anything.
   const net = await provider.getNetwork();
-  const payerBalance = await provider.getBalance(payer.address);
-  log(`- RPC chainId: ${net.chainId} · payer balance: ${fromWei(payerBalance)} PHRS`);
+  const bal = await provider.getBalance(payer.address);
   if (net.chainId !== 688689n) {
-    throw new Error(`Connected to chainId ${net.chainId}, not Pharos Atlantic (688689). A stale exported RPC overrides .env — open a fresh terminal, or run: unset RPC PRIVATE_KEY CONTRACT_ADDRESS`);
+    throw new Error(`Wrong chain ${net.chainId} — open a fresh terminal, or run: unset RPC PRIVATE_KEY CONTRACT_ADDRESS`);
   }
-  if (payerBalance < toWei('0.1')) {
-    throw new Error(`Payer ${payer.address} balance is only ${fromWei(payerBalance)} PHRS — too low. Fund it or claim from the faucet.`);
+  if (bal < toWei('0.1')) {
+    throw new Error(`Payer ${payer.address} balance ${fromWei(bal)} PHRS is too low.`);
   }
-  log('');
+  console.log(`\n  ${S.dim}contract${S.reset} ${short(contractAddress)}    ${S.dim}chainId${S.reset} ${net.chainId} ${S.green}✓${S.reset}`);
+  console.log(`  ${S.dim}payer   ${S.reset} ${short(payer.address)}    ${S.dim}balance${S.reset} ${Number(fromWei(bal)).toFixed(3)} PHRS`);
 
-  // 1. Fund provider for redeem gas.
-  log('## 1. Fund provider (for redeem gas)');
-  const fundTx = await payer.sendTransaction({ to: providerWallet.address, value: toWei('0.02') });
-  log(`- fund tx: [\`${fundTx.hash}\`](${txLink(fundTx.hash)})`);
+  rec('# Live proof — pay-per-call settlement on Pharos Atlantic');
+  rec('');
+  rec(`- Contract: [\`${contractAddress}\`](${addressLink(contractAddress)})`);
+  rec('- Chain: Pharos Atlantic Testnet (688689) · Explorer: https://atlantic.pharosscan.xyz');
+  rec(`- Payer: [\`${payer.address}\`](${addressLink(payer.address)})`);
+  rec(`- Provider: [\`${prov.address}\`](${addressLink(prov.address)}) (freshly generated, funded by payer)`);
+  rec('');
+
+  const TOTAL = 6;
+
+  // STEP 1 — open channel
+  step(1, TOTAL, 'Open a channel & escrow funds');
+  const fundTx = await payer.sendTransaction({ to: prov.address, value: toWei('0.02') });
   await fundTx.wait();
-  log('');
-
-  // 2. Open channel.
-  log(`## 2. Open channel (escrow ${depositPhrs} PHRS)`);
-  const openTx = await payerContract.openChannel(providerWallet.address, duration, { value: toWei(depositPhrs) });
-  log(`- open tx: [\`${openTx.hash}\`](${txLink(openTx.hash)})`);
+  txln('funded provider for gas', fundTx.hash);
+  const openTx = await payerC.openChannel(prov.address, duration, { value: toWei(depositPhrs) });
   const openRc = await openTx.wait();
-  const channelId = eventArgs(payerContract, openRc, 'ChannelOpened').channelId;
-  const channel = await payerContract.getChannel(channelId);
-  log(`- channelId: ${channelId} · expiry: ${new Date(Number(channel.expiry) * 1000).toISOString()}`);
-  log('');
+  const channelId = evt(payerC, openRc, 'ChannelOpened').channelId;
+  const ch = await payerC.getChannel(channelId);
+  txln(`channel #${channelId} opened — escrow ${depositPhrs} PHRS`, openTx.hash);
+  note(`one up-front transaction; expires in ${duration}s`);
+  rec('## 1. Open channel');
+  rec(`- fund tx: [\`${fundTx.hash}\`](${txLink(fundTx.hash)})`);
+  rec(`- open tx: [\`${openTx.hash}\`](${txLink(openTx.hash)}) — channel ${channelId}, escrow ${depositPhrs} PHRS`);
+  rec('');
 
-  // 3. Three off-chain vouchers — one per "call", at 25/50/75% of the deposit
-  //    (scaled so any deposit works without exceeding it).
-  log('## 3. Pay per call (off-chain vouchers — zero transactions)');
-  const depositWei = toWei(depositPhrs);
-  const calls = [depositWei / 4n, depositWei / 2n, (depositWei * 3n) / 4n];
+  // STEP 2 — pay per call off-chain
+  step(2, TOTAL, 'Pay per call — sign vouchers OFF-CHAIN (zero tx)');
+  const depW = toWei(depositPhrs);
+  const calls = [depW / 4n, depW / 2n, (depW * 3n) / 4n];
   let lastSig;
   for (let i = 0; i < calls.length; i++) {
     lastSig = await signVoucher(payer, contractAddress, channelId, calls[i]);
-    log(`- call ${i + 1}: signed voucher, cumulative ${fromWei(calls[i])} PHRS  (off-chain, free)`);
+    ok(`call ${i + 1} → cumulative ${fromWei(calls[i])} PHRS   ${S.gray}(off-chain, free)${S.reset}`);
   }
-  const settleWei = calls[calls.length - 1];
-  log(`- 3 calls authorized, **0 transactions** so far. The provider holds signatures worth ${fromWei(settleWei)} PHRS.`);
-  log('');
+  const settleW = calls[calls.length - 1];
+  console.log(`\n  ${S.yellow}⚡ 3 calls authorized · ${S.bold}0 transactions${S.reset}${S.yellow} so far${S.reset}`);
+  note(`the provider holds signatures worth ${fromWei(settleW)} PHRS, redeemable anytime.`);
+  rec('## 2. Pay per call (off-chain vouchers — zero transactions)');
+  for (let i = 0; i < calls.length; i++) rec(`- call ${i + 1}: cumulative ${fromWei(calls[i])} PHRS (off-chain, free)`);
+  rec(`- 3 calls authorized, **0 transactions** so far; provider holds signatures worth ${fromWei(settleW)} PHRS.`);
+  rec('');
 
-  // 4. Provider settles all three with ONE redeem of the latest voucher.
-  log('## 4. Settle — one redeem covers all three calls');
-  const redeemTx = await providerContract.redeem(channelId, settleWei, lastSig);
-  log(`- redeem tx: [\`${redeemTx.hash}\`](${txLink(redeemTx.hash)})`);
+  // STEP 3 — forged voucher attack
+  step(3, TOTAL, 'Attack — a FORGED voucher (not signed by the payer)');
+  const forged = await signVoucher(prov, contractAddress, channelId, settleW); // signed by provider, not payer
+  try {
+    const t = await provC.redeem(channelId, settleW, forged);
+    await t.wait();
+    bad('forged voucher ACCEPTED — should never happen');
+  } catch {
+    bad('rejected by the contract');
+    note('redeem recovers the signer and requires it equals the payer;');
+    note('a voucher signed by anyone else fails (BadVoucher).');
+  }
+  rec('## 3. Forged-voucher attack — rejected on-chain');
+  rec('- A voucher signed by the provider (not the payer) was rejected: `redeem` recovers the signer and requires it equals the channel payer (BadVoucher).');
+  rec('');
+
+  // STEP 4 — settle
+  step(4, TOTAL, 'Settle — one redeem covers all three calls');
+  const redeemTx = await provC.redeem(channelId, settleW, lastSig);
   const redeemRc = await redeemTx.wait();
-  const paid = eventArgs(providerContract, redeemRc, 'Redeemed').paid;
-  log(`- provider redeemed cumulative ${fromWei(settleWei)} PHRS in a single tx (paid: ${fromWei(paid)} PHRS)`);
-  log('');
+  const paid = evt(provC, redeemRc, 'Redeemed').paid;
+  txln(`provider redeemed ${fromWei(settleW)} PHRS in ONE tx (paid ${fromWei(paid)})`, redeemTx.hash);
+  const remaining = await payerC.redeemable(channelId);
+  note(`3 calls settled by 1 transaction · ${fromWei(remaining)} PHRS still escrowed`);
+  rec('## 4. Settle — one redeem covers all three calls');
+  rec(`- redeem tx: [\`${redeemTx.hash}\`](${txLink(redeemTx.hash)}) — paid ${fromWei(paid)} PHRS`);
+  rec('');
 
-  // 5. After expiry, payer reclaims the remainder.
-  log('## 5. Reclaim remainder after expiry');
-  await waitForTimestamp(provider, Number(channel.expiry), 'channel to expire');
-  const reclaimTx = await payerContract.reclaim(channelId);
-  log(`- reclaim tx: [\`${reclaimTx.hash}\`](${txLink(reclaimTx.hash)})`);
+  // STEP 5 — reclaim
+  step(5, TOTAL, 'Reclaim the unused escrow after expiry');
+  await waitWindow(provider, Number(ch.expiry), 'channel to expire');
+  const reclaimTx = await payerC.reclaim(channelId);
   const reclaimRc = await reclaimTx.wait();
-  const reclaimed = eventArgs(payerContract, reclaimRc, 'Reclaimed').amount;
-  log(`- payer reclaimed ${fromWei(reclaimed)} PHRS (deposit ${depositPhrs} − settled ${fromWei(settleWei)})`);
-  log('');
+  const reclaimed = evt(payerC, reclaimRc, 'Reclaimed').amount;
+  txln(`payer reclaimed ${fromWei(reclaimed)} PHRS`, reclaimTx.hash);
+  rec('## 5. Reclaim remainder after expiry');
+  rec(`- reclaim tx: [\`${reclaimTx.hash}\`](${txLink(reclaimTx.hash)}) — ${fromWei(reclaimed)} PHRS returned`);
+  rec('');
 
-  log('## Result');
-  log('Three pay-per-call charges were authorized with free off-chain signatures and settled by a single on-chain transaction, then the unused escrow was returned. This is x402-style metered payment between agents — pay per call, settle once.');
+  // STEP 6 — summary box
+  step(6, TOTAL, 'Result');
+  console.log(`  ${S.green}┌─ SETTLED ${rule('─', 37)}${S.reset}`);
+  console.log(`  ${S.green}│${S.reset}  ${S.bold}⚡ 3 calls → 1 settlement transaction${S.reset}`);
+  console.log(`  ${S.green}│${S.reset}  ${S.dim}provider earned ${fromWei(settleW)} · payer reclaimed ${fromWei(reclaimed)}${S.reset}`);
+  console.log(`  ${S.green}│${S.reset}  ${S.dim}pay per call, settle once — x402 between agents.${S.reset}`);
+  console.log(`  ${S.green}└${rule('─', 47)}${S.reset}`);
+  rec('## Result');
+  rec(`**3 calls settled in 1 transaction.** Provider earned ${fromWei(settleW)} PHRS, payer reclaimed ${fromWei(reclaimed)} PHRS, and a forged voucher was rejected on-chain. Pay per call, settle once.`);
 
   mkdirSync('proof', { recursive: true });
-  writeFileSync('proof/transcript.md', lines.join('\n') + '\n');
-  console.log('\nWrote proof/transcript.md');
+  writeFileSync('proof/transcript.md', T.join('\n') + '\n');
+  console.log(`\n  ${S.dim}proof written → proof/transcript.md${S.reset}\n`);
 } catch (e) {
-  console.error('Error:', e.shortMessage || e.message || e);
+  console.error(`\n  ${S.red}Error:${S.reset} ${e.shortMessage || e.message || e}`);
   process.exit(1);
 }
