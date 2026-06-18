@@ -13,7 +13,16 @@ import {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lines = [];
-const log = (s = '') => { console.log(s); lines.push(s); };
+const C = { reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m', cyan: '\x1b[36m' };
+// Push markdown to the transcript file; print a clean colorized version to the terminal.
+function toConsole(md) {
+  let s = md.replace(/\[`([^`]+)`\]\(([^)]+)\)/g, (_, t, u) => `${t}  ${C.dim}${u}${C.reset}`);
+  s = s.replace(/`([^`]+)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, `${C.bold}$1${C.reset}`);
+  if (s.startsWith('# ')) return `\n${C.bold}${C.cyan}${s.slice(2)}${C.reset}\n`;
+  if (s.startsWith('## ')) return `\n${C.bold}${C.cyan}━━  ${s.slice(3)}  ━━${C.reset}`;
+  return s;
+}
+const log = (md = '') => { lines.push(md); console.log(toConsole(md)); };
 
 async function waitForTimestamp(provider, ts, label) {
   log(`  ...waiting for ${label}`);
@@ -68,26 +77,27 @@ try {
   log(`- channelId: ${channelId} · expiry: ${new Date(Number(channel.expiry) * 1000).toISOString()}`);
   log('');
 
-  // 3. Three off-chain vouchers — one per "call". No transactions.
+  // 3. Three off-chain vouchers — one per "call", at 25/50/75% of the deposit
+  //    (scaled so any deposit works without exceeding it).
   log('## 3. Pay per call (off-chain vouchers — zero transactions)');
-  const cumulatives = ['0.05', '0.10', '0.15'];
+  const depositWei = toWei(depositPhrs);
+  const calls = [depositWei / 4n, depositWei / 2n, (depositWei * 3n) / 4n];
   let lastSig;
-  for (let i = 0; i < cumulatives.length; i++) {
-    const cum = cumulatives[i];
-    lastSig = await signVoucher(payer, contractAddress, channelId, toWei(cum));
-    log(`- call ${i + 1}: signed voucher, cumulative ${cum} PHRS  (off-chain, free)`);
+  for (let i = 0; i < calls.length; i++) {
+    lastSig = await signVoucher(payer, contractAddress, channelId, calls[i]);
+    log(`- call ${i + 1}: signed voucher, cumulative ${fromWei(calls[i])} PHRS  (off-chain, free)`);
   }
-  log(`- 3 calls authorized, **0 transactions** so far. The provider holds signatures worth ${cumulatives[cumulatives.length - 1]} PHRS.`);
+  const settleWei = calls[calls.length - 1];
+  log(`- 3 calls authorized, **0 transactions** so far. The provider holds signatures worth ${fromWei(settleWei)} PHRS.`);
   log('');
 
   // 4. Provider settles all three with ONE redeem of the latest voucher.
   log('## 4. Settle — one redeem covers all three calls');
-  const provStart = await provider.getBalance(providerWallet.address);
-  const redeemTx = await providerContract.redeem(channelId, toWei('0.15'), lastSig);
+  const redeemTx = await providerContract.redeem(channelId, settleWei, lastSig);
   log(`- redeem tx: [\`${redeemTx.hash}\`](${txLink(redeemTx.hash)})`);
   const redeemRc = await redeemTx.wait();
   const paid = eventArgs(providerContract, redeemRc, 'Redeemed').paid;
-  log(`- provider redeemed cumulative 0.15 PHRS in a single tx (paid: ${fromWei(paid)} PHRS)`);
+  log(`- provider redeemed cumulative ${fromWei(settleWei)} PHRS in a single tx (paid: ${fromWei(paid)} PHRS)`);
   log('');
 
   // 5. After expiry, payer reclaims the remainder.
@@ -97,7 +107,7 @@ try {
   log(`- reclaim tx: [\`${reclaimTx.hash}\`](${txLink(reclaimTx.hash)})`);
   const reclaimRc = await reclaimTx.wait();
   const reclaimed = eventArgs(payerContract, reclaimRc, 'Reclaimed').amount;
-  log(`- payer reclaimed ${fromWei(reclaimed)} PHRS (deposit ${depositPhrs} − settled 0.15)`);
+  log(`- payer reclaimed ${fromWei(reclaimed)} PHRS (deposit ${depositPhrs} − settled ${fromWei(settleWei)})`);
   log('');
 
   log('## Result');
