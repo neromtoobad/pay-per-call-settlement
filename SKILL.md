@@ -26,6 +26,20 @@ that. This is the payment rail agents bill each other over.
 - One-off transfers or swaps — use `pharos-skill-engine`.
 - Payments where on-chain-per-payment is fine and metering isn't needed.
 
+## Capability Index
+
+Pharos Skill Engine format — map a user intent to its on-chain operation. Full `cast`/`forge` command templates (parameters, output parsing, error handling) are in [`references/pay-per-call.md`](references/pay-per-call.md).
+
+| User Need | Capability | Detailed Instructions |
+|---|---|---|
+| Open a payment channel / escrow PHRS for a provider | `cast send openChannel()` | → [references/pay-per-call.md](references/pay-per-call.md#open-a-channel) |
+| Pay per call (sign an off-chain voucher) | `cast wallet sign` voucher | → [references/pay-per-call.md](references/pay-per-call.md#sign-a-voucher-off-chain--free-no-transaction) |
+| Redeem vouchers / get paid (provider) | `cast send redeem()` | → [references/pay-per-call.md](references/pay-per-call.md#redeem-provider-only) |
+| Reclaim unused escrow after expiry | `cast send reclaim()` | → [references/pay-per-call.md](references/pay-per-call.md#reclaim-payer-only-after-expiry) |
+| Inspect a channel | `cast call` views | → [references/pay-per-call.md](references/pay-per-call.md#views-free--no-gas) |
+
+> Same verified contract (`0xAcAB26A6130fC6cB32CAB58Ec0F011E7346a2E05`), two interfaces: drive it with `cast`/`forge` (above, Pharos Skill Engine style) **or** the ethers `scripts/` (below).
+
 ## How it works
 
 1. **Open a channel** — payer escrows PHRS for a specific provider, with an expiry.
