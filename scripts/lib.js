@@ -2,7 +2,8 @@
 // The voucher hashing/signing here mirrors the contract exactly:
 //   voucherHash = keccak256(abi.encodePacked(address(this), channelId, cumulativeAmount))
 //   signature   = personal_sign(voucherHash)   (ethers wallet.signMessage(getBytes(hash)))
-import 'dotenv/config';
+import { config } from 'dotenv';
+config({ override: true }); // project .env wins over any shell-injected vars (e.g. a global RPC)
 import { readFileSync } from 'node:fs';
 import { ethers } from 'ethers';
 
